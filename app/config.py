@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     # Embeddings
-    embedding_mode: Literal["mock", "local", "openai"] = "mock"
+    embedding_mode: Literal["mock", "local"] = "mock"
     embedding_dim: int = 384
     local_model_name: str = "all-MiniLM-L6-v2"
 

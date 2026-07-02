@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logging.basicConfig(level=settings.log_level.upper())
 
-    # Create the schema (assignment shortcut; see db/init_db.py).
+    # Create the schema on startup (see db/init_db.py for the migration tradeoff).
     await init_db()
 
     # Heavy objects created ONCE and shared across requests.

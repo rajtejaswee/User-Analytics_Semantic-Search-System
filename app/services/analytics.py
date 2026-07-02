@@ -22,7 +22,7 @@ def _apply_filters(stmt, *, event, user_id, date_from, date_to):
         start = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
         stmt = stmt.where(Event.timestamp >= start)
     if date_to is not None:
-        # inclusive `to`: everything strictly before the next day's midnight
+        # inclusive `to`: include the whole final day, up to 23:59:59.999999
         end = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
         stmt = stmt.where(Event.timestamp <= end)
     return stmt

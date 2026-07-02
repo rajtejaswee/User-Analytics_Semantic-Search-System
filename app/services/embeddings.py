@@ -3,12 +3,13 @@
 The rest of the app depends only on ``EmbeddingProvider.embed``; the concrete
 implementation is chosen at startup from ``EMBEDDING_MODE``:
 
-  * ``mock``   -> deterministic hash->vector. No downloads, reproducible in CI.
-  * ``local``  -> sentence-transformers all-MiniLM-L6-v2 (extra: ``uv sync --extra local``).
-  * ``openai`` -> interface stub; wiring a live key is out of scope for this assignment.
+  * ``mock``  -> deterministic hash->vector. No downloads, reproducible in CI.
+  * ``local`` -> sentence-transformers all-MiniLM-L6-v2 (extra: ``uv sync --extra local``).
 
-All providers return L2-normalized float lists so cosine similarity reduces to
-a dot product and Chroma's cosine space behaves consistently.
+A hosted provider (e.g. OpenAI) would be one more subclass implementing the
+same two methods. All providers return L2-normalized float lists so cosine
+similarity reduces to a dot product and Chroma's cosine space behaves
+consistently.
 """
 from __future__ import annotations
 
@@ -75,29 +76,10 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         return np.asarray(vecs, dtype=np.float32).tolist()
 
 
-class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """Interface placeholder to show the abstraction is provider-agnostic.
-
-    Not wired to a live API in this assignment; raises if selected so the
-    failure is explicit rather than silent.
-    """
-
-    def __init__(self, dim: int = 1536):
-        self.dim = dim
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        raise NotImplementedError(
-            "EMBEDDING_MODE=openai is a stub in this assignment. "
-            "Use 'mock' (default) or 'local'."
-        )
-
-
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     mode = settings.embedding_mode
     if mode == "mock":
         return MockEmbeddingProvider(dim=settings.embedding_dim)
     if mode == "local":
         return LocalEmbeddingProvider(model_name=settings.local_model_name)
-    if mode == "openai":
-        return OpenAIEmbeddingProvider()
     raise ValueError(f"Unknown EMBEDDING_MODE: {mode!r}")

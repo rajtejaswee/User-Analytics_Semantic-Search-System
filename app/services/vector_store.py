@@ -25,7 +25,7 @@ class VectorStore:
     def __init__(self, settings: Settings):
         self._client = chromadb.PersistentClient(
             path=settings.chroma_dir,
-            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
         self._collection = self._client.get_or_create_collection(
             name=settings.chroma_collection,
@@ -86,11 +86,3 @@ class VectorStore:
 
     def count(self) -> int:
         return self._collection.count()
-
-    def reset(self) -> None:
-        """Drop all vectors (used by the test suite between runs)."""
-        self._client.reset()
-        self._collection = self._client.get_or_create_collection(
-            name=self._collection.name,
-            metadata={"hnsw:space": "cosine"},
-        )

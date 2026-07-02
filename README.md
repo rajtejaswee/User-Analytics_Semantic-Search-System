@@ -79,7 +79,7 @@ EMBEDDING_MODE=local uv run uvicorn app.main:app --reload
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `DATABASE_URL` | `postgresql+asyncpg://analytics:analytics@localhost:5432/analytics` | Async DB URL |
-| `EMBEDDING_MODE` | `mock` | `mock` \| `local` \| `openai` |
+| `EMBEDDING_MODE` | `mock` | `mock` \| `local` |
 | `EMBEDDING_DIM` | `384` | Mock vector dimension |
 | `LOCAL_MODEL_NAME` | `all-MiniLM-L6-v2` | sentence-transformers model |
 | `CHROMA_DIR` | `./chroma_data` | ChromaDB persistence path |
@@ -264,11 +264,15 @@ conventions consistent across all of them:
 is a **derived index**. Order: persist the Postgres row (flush to surface DB
 errors) → embed → upsert into Chroma — all inside the request. The DB session
 commits only if both succeed; if the Chroma upsert raises, the request fails and
-Postgres is rolled back, so the stores never silently diverge.
+Postgres is rolled back.
 
-This is a deliberate **best-effort synchronous dual write** — simple and correct
-at this scale. The production alternative (async indexing via a queue +
-reconciliation job) is described in [§4](#4-scalability--edge-cases).
+One failure window remains open by design: if the Postgres **commit itself**
+fails *after* the vector write succeeded, Chroma keeps an orphan vector. I
+accepted that asymmetry deliberately — an orphan vector can at worst surface a
+stale search hit; it can never corrupt analytics, because those only read
+Postgres. The production design (async indexing via a queue + a reconciliation
+job that diffs the two stores) closes this window and is described in
+[§4](#4-scalability--edge-cases).
 
 ### Why a centroid for similar-users
 A user's behaviour is summarized as the **mean of their event embeddings** (then
@@ -287,11 +291,12 @@ All embedding code sits behind one `EmbeddingProvider` interface, selected by
 
 | Mode | Behavior | Use for |
 |------|----------|---------|
-| `mock` *(default)* | hash(text) → seeded RNG → normalized vector | CI / review / offline — deterministic |
+| `mock` *(default)* | hash(text) → seeded RNG → normalized vector | CI / offline — deterministic |
 | `local` | sentence-transformers `all-MiniLM-L6-v2` | real semantic quality |
-| `openai` | interface stub (raises if used) | shows the seam for a hosted provider |
 
-The model is loaded **once at startup** (FastAPI lifespan), never per request.
+A hosted provider (OpenAI, Cohere, …) would be one more subclass implementing
+the same two-method interface. The model is loaded **once at startup** (FastAPI
+lifespan), never per request.
 
 ### Database schema
 Everything lives in one `events` table — events are immutable facts, so there's
@@ -370,13 +375,20 @@ else changes.
 - `from > to` → `422`.
 - `/search` on an empty index → `200` with `[]` (no crash).
 - `/similar-users` for an unknown user → `404`.
-- Dual-write failure → request fails and Postgres rolls back (no divergence).
+- Vector-store write failure → request fails and Postgres rolls back (tested
+  by forcing the failure; the reverse commit-failure window is documented in
+  [§3](#3-design-decisions)).
 - One consistent error envelope for all failures.
 
 **What I'd change for production**
 - **Async indexing:** `/track` writes Postgres synchronously and enqueues the
   embed/index step (worker + queue) with a reconciliation job that backfills
   Chroma from Postgres — removing model latency from the write path.
+- **Move blocking work off the event loop:** the embedding and vector-store
+  calls are synchronous inside async handlers. Negligible with the mock
+  (microseconds), but the local model would block the loop under load — the
+  queue above fixes it structurally; a threadpool (`anyio.to_thread`) is the
+  lighter interim fix.
 - **Precomputed user vectors** updated incrementally.
 - **Dedicated vector DB** (Pinecone/Weaviate/pgvector) with replication.
 - **Batching** embeddings on ingest.
@@ -424,7 +436,7 @@ app/
     init_db.py       create tables on startup
   schemas/events.py  Pydantic request/response models (camelCase aliases)
   services/
-    embeddings.py    EmbeddingProvider: mock | local | openai
+    embeddings.py    EmbeddingProvider: mock | local
     vector_store.py  ChromaDB wrapper (swappable)
     analytics.py     SQL GROUP BY aggregations
     search.py        semantic search + user-centroid similarity
@@ -448,8 +460,6 @@ version would do instead:
   page=/pricing"`) reproduces the same vector, so `/search` scores are noise
   unless the stored document matches the query exactly. `/similar-users` still
   clusters users who share identical events.
-- **`openai` embedding mode is a stub** — it demonstrates the provider seam but
-  isn't wired to a live API.
 - **Schema is created via `create_all`** on startup, not Alembic migrations.
 - **Dual write is synchronous in-request**, not queue-backed.
 - **No auth / rate limiting** — deliberately omitted here; in production I'd

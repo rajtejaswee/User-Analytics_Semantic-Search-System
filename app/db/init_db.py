@@ -1,9 +1,9 @@
 """Schema bootstrap.
 
-For this assignment we create tables directly from the SQLAlchemy metadata on
-startup (``create_all``) instead of running Alembic migrations. That keeps the
-reviewer's setup to a single ``docker-compose up``. A production system would
-use versioned migrations (noted in the README).
+Tables are created directly from the SQLAlchemy metadata on startup
+(``create_all``) instead of via Alembic migrations, which keeps setup to a
+single ``docker compose up``. A production system would use versioned
+migrations (noted in the README).
 """
 from __future__ import annotations
 

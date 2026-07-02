@@ -45,9 +45,10 @@ async def track(
     session.add(row)
     await session.flush()  # surface DB errors before we touch the index
 
-    # 2) Derived index: Chroma. Done in-request (best-effort dual write). If this
-    #    raises, get_session rolls back Postgres so the two stores don't diverge.
-    #    Production would decouple this via an async queue (see README).
+    # 2) Derived index: Chroma, written in-request. If this raises, get_session
+    #    rolls back Postgres. The remaining window — a commit failure after this
+    #    upsert leaves an orphan vector — is accepted here; production would
+    #    decouple indexing via a queue + reconciliation (see README).
     document = _embed_text(payload.event, payload.metadata)
     embedding = embedder.embed_one(document)
     store.upsert(

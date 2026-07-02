@@ -16,9 +16,8 @@ ChromaDB is a derived vector index for the semantic endpoints.
 1. [Setup instructions](#1-setup-instructions)
 2. [API documentation](#2-api-documentation) (sample requests / responses)
 3. [Design decisions](#3-design-decisions)
-4. [How this maps to the evaluation criteria](#4-how-this-maps-to-the-evaluation-criteria)
-5. [Scalability & edge cases](#5-scalability--edge-cases)
-6. [Testing](#6-testing) · [Project layout](#7-project-layout) · [What's mocked](#8-whats-mocked--not-productionized)
+4. [Scalability & edge cases](#4-scalability--edge-cases)
+5. [Testing & correctness](#5-testing--correctness) · [Project layout](#6-project-layout) · [What's mocked](#7-whats-mocked--not-productionized)
 
 ---
 
@@ -193,7 +192,7 @@ curl -s 'http://localhost:8000/search?query=pricing%20page&limit=5'
 
 > **Note:** the scores above assume `EMBEDDING_MODE=local`. Under the default
 > mock, vectors have no semantic structure, so scores are low/noisy unless the
-> query matches a stored document exactly (see [§8](#8-whats-mocked--not-productionized)).
+> query matches a stored document exactly (see [§7](#7-whats-mocked--not-productionized)).
 
 ### `GET /similar-users` — behaviourally similar users
 
@@ -239,6 +238,27 @@ Unknown `userId` → `404`:
 | Embeddings | `all-MiniLM-L6-v2` (384-d) + deterministic mock | offline-capable, swappable, reproducible tests |
 | Packaging | uv | fast, reproducible installs |
 
+### API design
+The API is four intention-revealing endpoints — `POST /track`, `GET /analytics`,
+`GET /search`, `GET /similar-users` — plus `GET /health`. I kept a few
+conventions consistent across all of them:
+
+- **Status codes carry meaning.** `201` for a created event, `422` for anything
+  invalid, `404` only for "this user has no data", and `200` with an empty list
+  when a query is valid but simply has no results — an empty index is not an
+  error.
+- **One error envelope everywhere.** Every failure — validation, HTTP, or
+  unexpected — returns the same `{"error": {"type": ..., "detail": ...}}` shape
+  (exception handlers in `app/main.py`), so a client parses one format.
+- **Typed contracts.** Every request and response is a Pydantic model
+  (`app/schemas/events.py`); the OpenAPI docs at `/docs` are generated from
+  them, so they can't drift from the code. External JSON is camelCase, internal
+  Python is snake_case, bridged by field aliases.
+- **Thin routers.** Routers only validate and delegate; the logic lives in
+  `services/`, and shared resources (DB session, embedder, vector store) are
+  injected via FastAPI `Depends` (`app/deps.py`), which is also what makes the
+  test suite able to swap them out.
+
 ### Dual-write consistency tradeoff
 `/track` writes to **two** stores. Postgres is the **source of truth**; Chroma
 is a **derived index**. Order: persist the Postgres row (flush to surface DB
@@ -248,7 +268,7 @@ Postgres is rolled back, so the stores never silently diverge.
 
 This is a deliberate **best-effort synchronous dual write** — simple and correct
 at this scale. The production alternative (async indexing via a queue +
-reconciliation job) is described in [§5](#5-scalability--edge-cases).
+reconciliation job) is described in [§4](#4-scalability--edge-cases).
 
 ### Why a centroid for similar-users
 A user's behaviour is summarized as the **mean of their event embeddings** (then
@@ -273,8 +293,10 @@ All embedding code sits behind one `EmbeddingProvider` interface, selected by
 
 The model is loaded **once at startup** (FastAPI lifespan), never per request.
 
-### Database schema 
-Postgres `events` table:
+### Database schema
+Everything lives in one `events` table — events are immutable facts, so there's
+nothing to normalize away, and analytics stay single-table aggregations with no
+joins:
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -285,13 +307,33 @@ Postgres `events` table:
 | `timestamp` | TIMESTAMPTZ NOT NULL | **indexed**; server default `now()` |
 | `created_at` | TIMESTAMPTZ | server default `now()` |
 
-**Indexes:** `user_id`, `event`, `timestamp`, and a composite `(event,
-timestamp)` for filtered time-range analytics. JSONB keeps event metadata
-schemaless while the analytical columns stay strongly typed and indexable.
+The split between typed columns and JSONB is intentional: everything the API
+filters or aggregates on (`user_id`, `event`, `timestamp`) is a strongly typed,
+indexed column, while open-ended per-event attributes go into JSONB — schemaless
+where flexibility matters, structured where queries run. `timestamp` (when the
+event happened, client-suppliable for backfills) is kept separate from
+`created_at` (when we recorded it).
 
-ChromaDB `events` collection mirrors each row by the **same UUID**; document =
+**Indexing follows the query patterns:** a single-column index for each filter
+(`user_id`, `event`, `timestamp`), plus a composite `(event, timestamp)` for
+the most common analytics shape — "one event type over a date range". Column
+types are declared dialect-agnostically (`Uuid`,
+`JSON().with_variant(JSONB, "postgresql")`), so the identical model runs on
+Postgres in docker-compose and on SQLite in the test suite.
+
+ChromaDB's `events` collection mirrors each row by the **same UUID**; document =
 event text (+ light metadata context); metadata = `{user_id, event, timestamp}`
-so results return without a second DB hit. Cosine space, so `score = 1 − distance`.
+so search results return without a second DB hit. Cosine space, so
+`score = 1 − distance`.
+
+### Code organization
+The codebase is layered `routers → services → db`, with `schemas`, `config`,
+and `deps` as cross-cutting modules — each file has one responsibility (see
+[project layout](#6-project-layout)). The two most volatile choices — the
+embedding model and the vector backend — are each isolated behind a single
+interface, so replacing either is a one-class change that doesn't ripple.
+Docstrings document the *why* of each non-obvious decision (dual-write
+ordering, the centroid approximation, the dialect shims), not just the what.
 
 ### Vector store is swappable
 Everything Chroma-specific lives in `app/services/vector_store.py` behind a small
@@ -301,67 +343,7 @@ else changes.
 
 ---
 
-## 4. How this maps to the evaluation criteria
-
-> This section ties each grading criterion to concrete, verifiable evidence in
-> the codebase.
-
-### 4.1 API design and structure
-- **RESTful, intention-revealing endpoints:** `POST /track`, `GET /analytics`,
-  `GET /search`, `GET /similar-users`, plus `GET /health`.
-- **Correct semantics:** `201` on create, `422` on validation, `404` for an
-  unknown user, `200` with empty results (not an error) on an empty index.
-- **Typed contracts:** Pydantic request/response models (`app/schemas/events.py`)
-  with camelCase aliases — auto-generated, always-accurate OpenAPI at `/docs`.
-- **Consistent error envelope:** a single `{"error": {...}}` shape via FastAPI
-  exception handlers (`app/main.py`) instead of ad-hoc error bodies.
-- **Thin routers, layered structure:** routers validate + delegate; all logic
-  lives in `services/`. Dependencies (DB session, embedder, vector store) are
-  injected via FastAPI `Depends` (`app/deps.py`).
-
-### 4.2 Database schema design
-- Normalized `events` table with an explicit, minimal column set (see schema
-  table above).
-- **Indexing strategy driven by the query patterns:** single-column indexes for
-  each filter, plus a composite `(event, timestamp)` for the common
-  "event over a date range" analytics query.
-- **JSONB** for open-ended per-event metadata — flexible without sacrificing the
-  typed, indexed analytical columns.
-- **Dialect-agnostic types** (`Uuid`, `JSON().with_variant(JSONB, "postgresql")`)
-  so the identical model runs on Postgres (prod) and SQLite (tests).
-
-### 4.3 Code clarity and organization
-- **Clear layering:** `routers → services → db`, with `schemas`, `config`, and
-  `deps` as cross-cutting concerns. Each module has one responsibility.
-- **The vector backend and the embedding model are each isolated behind one
-  interface**, so swaps don't ripple.
-- **Docstrings explain the "why"** (dual-write ordering, centroid rationale,
-  dialect shims), not just the "what". Consistent naming and type hints
-  throughout.
-
-### 4.4 Correctness of implementation
-- **24 automated tests pass** (`uv run pytest -q`) covering `/track` validation +
-  dual-write (including a forced vector-store failure → rollback), every
-  `/analytics` filter combination, `/search` ranking/limits/shape, and
-  `/similar-users` ranking + 404.
-- **Verified end-to-end against real Postgres + ChromaDB** via `docker compose up`
-  (not just against the SQLite test shim).
-- **Analytics are exact aggregations** — counted via SQL `GROUP BY` (one row
-  per distinct user, not per event), with the total and top-N derived from the
-  same grouped counts, so totals/per-user/most-active are always consistent
-  with each other.
-- **Consistency is preserved on failure:** a vector-store write error rolls back
-  the Postgres transaction.
-
-### 4.5 Thoughtfulness in scalability & edge cases
-Covered in detail in [§5](#5-scalability--edge-cases): SQL-side aggregation,
-model loaded once, HNSW approximate search, plus explicit handling of missing
-fields, malformed/absent timestamps, inverted date ranges, empty index, and
-unknown users — each with a matching test.
-
----
-
-## 5. Scalability & edge cases
+## 4. Scalability & edge cases
 
 **Scalability**
 - **Analytics** counting happens in Postgres (`GROUP BY` on indexed columns),
@@ -406,7 +388,7 @@ unknown users — each with a matching test.
 
 ---
 
-## 6. Testing
+## 5. Testing & correctness
 
 Tests run fully offline and deterministically (`EMBEDDING_MODE=mock`, SQLite via
 aiosqlite, temp ChromaDB dir):
@@ -416,12 +398,20 @@ uv sync --extra dev
 uv run pytest -q          # 24 passed
 ```
 
+The 24 tests cover `/track` validation and the dual write — including a forced
+vector-store failure that asserts the `500` response *and* the Postgres
+rollback — every `/analytics` filter combination, `/search`
+ranking/limit/response shape, and `/similar-users` ranking + `404`.
+
 The same ORM models run on SQLite (tests) and Postgres (prod) via
-dialect-agnostic column types, so tests exercise the real code paths.
+dialect-agnostic column types, so tests exercise the real code paths. Beyond
+the unit suite, the whole stack was verified end-to-end against real Postgres +
+ChromaDB via `docker compose up`: seeded through the live API and exercised
+through every endpoint, not just against the SQLite test shim.
 
 ---
 
-## 7. Project layout
+## 6. Project layout
 
 ```
 app/
@@ -447,9 +437,10 @@ Dockerfile           uv-based image (Python 3.12)
 
 ---
 
-## 8. What's mocked / not productionized
+## 7. What's mocked / not productionized
 
-Being explicit (the assignment allows partial scope if well-explained):
+Being upfront about the shortcuts I took deliberately, and what the production
+version would do instead:
 - **Embeddings default to a mock** (hash-based) so the system runs with zero
   downloads/keys. Real semantics require `EMBEDDING_MODE=local`. Under the mock,
   vectors have no semantic structure: only an *identical embedded document*
@@ -461,4 +452,6 @@ Being explicit (the assignment allows partial scope if well-explained):
   isn't wired to a live API.
 - **Schema is created via `create_all`** on startup, not Alembic migrations.
 - **Dual write is synchronous in-request**, not queue-backed.
-- **No auth / rate limiting** — out of scope for the assignment.
+- **No auth / rate limiting** — deliberately omitted here; in production I'd
+  add API-key or JWT auth and per-client rate limits before exposing `/track`
+  publicly.

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env / uv
+.venv/
+
+# Env / secrets
+.env
+.env.local
+
+# Data stores (local)
+chroma_data/
+*.sqlite3
+*.db
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local working files (not part of the submission)
+.claude/
+plan.md
+*.pdf

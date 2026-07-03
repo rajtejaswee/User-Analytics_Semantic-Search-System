@@ -17,7 +17,9 @@ ChromaDB is a derived vector index for the semantic endpoints.
 2. [API documentation](#2-api-documentation) (sample requests / responses)
 3. [Design decisions](#3-design-decisions)
 4. [Scalability & edge cases](#4-scalability--edge-cases)
-5. [Testing & correctness](#5-testing--correctness) · [Project layout](#6-project-layout) · [What's mocked](#7-whats-mocked--not-productionized)
+5. [Testing & correctness](#5-testing--correctness) 
+6. [Project layout](#6-project-layout) 
+7.[What's mocked](#7-whats-mocked--not-productionized)
 
 ---
 

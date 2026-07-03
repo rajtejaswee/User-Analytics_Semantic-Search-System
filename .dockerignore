@@ -1,0 +1,12 @@
+# Keep local artifacts out of the image. Note: unlike .gitignore, patterns
+# here are rooted at the build context, so nested matches need **/.
+**/__pycache__
+**/*.py[cod]
+**/.DS_Store
+.venv
+.git
+.env
+chroma_data
+*.db
+.pytest_cache
+.ruff_cache
